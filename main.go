@@ -27,13 +27,13 @@ func main() {
     client := kubernetes.NewForConfigOrDie(config)
 
     // define the namespace
-    namespace := "default"
+  //  namespace := "default"
 
     // define the pods client (easy for later use)
-    podsClient := client.CoreV1().Pods(namespace)
+    // podsClient := client.CoreV1().Pods(namespace)
 
     // read all pods
-    pods, err := podsClient.List(context.TODO(), metav1.ListOptions{})
+    pods, err := client.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
     if err != nil {
         panic(err.Error())
     }
