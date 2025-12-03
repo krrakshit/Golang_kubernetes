@@ -6,7 +6,7 @@ import (
     "os"
     "path/filepath"
 
-   //  v1 "k8s.io/api/core/v1"
+    v1 "k8s.io/api/core/v1"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/client-go/kubernetes"
     "k8s.io/client-go/tools/clientcmd"
@@ -39,12 +39,39 @@ func main() {
         fmt.Printf("%d -> %s (%s)\n", i+1, pod.Name, pod.Namespace)
     }
 
+    // ---------------------------------------------------------------
+    // Create Pod
+    // ---------------------------------------------------------------
+    podDefinition := &v1.Pod{
+        ObjectMeta: metav1.ObjectMeta{
+            GenerateName: "demo-k8s-",
+            Namespace:    namespace,
+        },
+        Spec: v1.PodSpec{
+            Containers: []v1.Container{
+                {
+                    Name:  "nginx-container",
+                    Image: "nginx:latest",
+                },
+            },
+        },
+    }
+
+    newPod, err := podsClient.Create(context.TODO(), podDefinition, metav1.CreateOptions{})
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("\nPod '%s' created successfully!\n", newPod.Name)
+
+    // ---------------------------------------------------------------
+    // Update Pod (change container image)
+    // ---------------------------------------------------------------
     fmt.Println("\nUpdating pod image...")
 
     retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 
         // get latest pod
-        currentPod, getErr := podsClient.Get(context.TODO(), "demo-k8s-ngfw8", metav1.GetOptions{})
+        currentPod, getErr := podsClient.Get(context.TODO(), newPod.Name, metav1.GetOptions{})
         if getErr != nil {
             return getErr
         }
@@ -64,4 +91,10 @@ func main() {
     }
 
     fmt.Println("Pod updated successfully!")
+
+
+    deleteErr := podsClient.Delete(context.TODO(), "demo-k8s-7p7w9", metav1.DeleteOptions{})
+    if deleteErr != nil {
+        panic(deleteErr.Error())
+    }
 }
