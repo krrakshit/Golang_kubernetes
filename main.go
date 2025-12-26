@@ -24,7 +24,9 @@ func main() {
 	// call watcher file function
 	// -------------------------
 	fmt.Println("Starting Kubernetes Watcher...")
-	WatchServices(client, "default")   // ← from watch.go
+	go WatchServices(client, "default")  
+	go WatchDeployments(client, "default") // ← from watch.go
+	go WatchReplicaSets(client, "default")
 
 	// block main so program doesn't exit immediately
 	select {}

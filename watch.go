@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
@@ -49,13 +48,6 @@ func WatchServices(clientset *kubernetes.Clientset, namespace string) {
 
 		fmt.Println("-----------------------------------------------------")
 	}
-
-	// optional: stop watcher automatically after 60 secs
-	go func() {
-		time.Sleep(60 * time.Second)
-		fmt.Println("⛔ Watcher Stopped")
-		watcher.Stop()
-	}()
 }
 
 // WatchDeployments continuously watches deployment events
@@ -96,13 +88,6 @@ func WatchDeployments(clientset *kubernetes.Clientset, namespace string) {
 
 		fmt.Println("-----------------------------------------------------")
 	}
-
-	// optional: stop watcher automatically after 60 secs
-	go func() {
-		time.Sleep(60 * time.Second)
-		fmt.Println("⛔ Watcher Stopped")
-		watcher.Stop()
-	}()
 }
 
 // WatchReplicaSets continuously watches replicaset events
@@ -143,11 +128,4 @@ func WatchReplicaSets(clientset *kubernetes.Clientset, namespace string) {
 
 		fmt.Println("-----------------------------------------------------")
 	}
-
-	// optional: stop watcher automatically after 60 secs
-	go func() {
-		time.Sleep(60 * time.Second)
-		fmt.Println("⛔ Watcher Stopped")
-		watcher.Stop()
-	}()
 }
