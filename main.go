@@ -1,94 +1,123 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
-	gatewayclientset "sigs.k8s.io/gateway-api/pkg/client/clientset/versioned"
 )
 
 func main() {
+	// Command-line flags
+	configFile := flag.String("config", "resources.json", "Path to resources configuration file")
+	flag.Parse()
+
 	home, _ := os.UserHomeDir()
-	configPath := filepath.Join(home, ".kube", "config")
+	kubeConfigPath := filepath.Join(home, ".kube", "config")
 
-	config, err := clientcmd.BuildConfigFromFlags("", configPath)
+	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 	if err != nil {
 		panic(err)
 	}
 
-	// Initialize clients
-	gatewayClient := gatewayclientset.NewForConfigOrDie(config)
-	envoyClient, err := NewEnvoyGatewayClient(config)
+	// Create dynamic client - ONE client for everything
+	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("🚀 Starting Gateway & Envoy Gateway Watcher with Event Pipeline")
-	fmt.Println("================================================================")
+	fmt.Println("🚀 Starting Generic Kubernetes Watcher")
+	fmt.Println("=======================================")
 
 	// ========================================================================
-	// STEP 1: Create the Event Pipeline (buffer size = 1000 events)
+	// STEP 1: Load configuration from JSON file
+	// ========================================================================
+	fmt.Printf("📄 Loading configuration from: %s\n", *configFile)
+	
+	watcherConfig, err := LoadConfigFromFile(*configFile)
+	if err != nil {
+		fmt.Printf("⚠️  Failed to load config file: %v\n", err)
+		fmt.Println("📋 Using default configuration...")
+		watcherConfig = GetDefaultWatcherConfig()
+	} else {
+		fmt.Println("✅ Configuration loaded successfully")
+	}
+
+	// ========================================================================
+	// STEP 2: Create the Event Pipeline
 	// ========================================================================
 	pipeline := NewEventPipeline(1000)
 
 	// ========================================================================
-	// STEP 2: Register custom handlers (optional - add your own logic here)
+	// STEP 3: Register custom handlers (using string kind now)
 	// ========================================================================
 	
 	// Handler 1: Alert on Gateway changes
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
-		if event.ResourceType == ResourceTypeGateway && event.Type == EventTypeModified {
-			fmt.Printf("🚨 CUSTOM ALERT: Gateway %s/%s was modified!\n", event.Namespace, event.Name)
+		if event.ResourceKind == "Gateway" && event.Type == EventTypeModified {
+			fmt.Printf("🚨 ALERT: Gateway %s/%s was modified!\n", event.Namespace, event.Name)
 		}
 	})
 
 	// Handler 2: Alert on SecurityPolicy changes
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
-		if event.ResourceType == ResourceTypeSecurityPolicy {
+		if event.ResourceKind == "SecurityPolicy" {
 			if len(changes.SpecChanges) > 0 {
-				fmt.Printf("🔒 SECURITY ALERT: SecurityPolicy %s/%s spec changed!\n", 
+				fmt.Printf("🔒 SECURITY: SecurityPolicy %s/%s spec changed!\n", 
 					event.Namespace, event.Name)
 			}
 		}
 	})
 
-	// Handler 3: Count listener changes in Gateway
+	// Handler 3: Log all changes
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
-		if event.ResourceType == ResourceTypeGateway && event.Type == EventTypeModified {
-			if listenerChange, ok := changes.SpecChanges["listeners"]; ok {
-				fmt.Printf("📡 LISTENER ALERT: Gateway %s listeners changed: %v\n", 
-					event.Name, listenerChange)
-			}
+		if event.Type == EventTypeModified {
+			fmt.Printf("📊 CHANGE DETECTED: %s %s/%s\n", 
+				event.ResourceKind, event.Namespace, event.Name)
 		}
 	})
 
 	// ========================================================================
-	// STEP 3: Start the pipeline processor (in background)
+	// STEP 4: Start the pipeline
 	// ========================================================================
 	go pipeline.Start()
 
 	// ========================================================================
-	// STEP 4: Start watchers - ONLY Gateway API & Envoy Gateway CRDs
+	// STEP 5: Start watchers for enabled resources
 	// ========================================================================
 	fmt.Println("\n📡 Starting Watchers...")
-	fmt.Println("   🌐 Gateway API: Gateways, HTTPRoutes")
-	fmt.Println("   🔧 Envoy Gateway: EnvoyProxy, BackendTrafficPolicy, SecurityPolicy, ClientTrafficPolicy")
-
-	// Gateway API resources
-	go WatchGateways(gatewayClient, "default", pipeline)
-	go WatchHTTPRoutes(gatewayClient, "default", pipeline)
-
-	// Envoy Gateway CRDs
-	go WatchEnvoyProxies(envoyClient.GetDynamicClient(), "default", pipeline)
-	go WatchBackendTrafficPolicies(envoyClient.GetDynamicClient(), "default", pipeline)
-	go WatchSecurityPolicies(envoyClient.GetDynamicClient(), "default", pipeline)
-	go WatchClientTrafficPolicies(envoyClient.GetDynamicClient(), "default", pipeline)
+	fmt.Printf("   Namespace: %s\n", watcherConfig.Namespace)
+	fmt.Println("   Enabled Resources:")
+	
+	enabledResources := watcherConfig.GetEnabledResources()
+	
+	if len(enabledResources) == 0 {
+		fmt.Println("   ⚠️  No resources enabled in configuration!")
+		os.Exit(1)
+	}
+	
+	for _, resource := range enabledResources {
+		fmt.Printf("      ✓ %s (%s/%s)\n", 
+			resource.Kind, 
+			resource.Group, 
+			resource.Resource)
+		
+		// Start watcher for this resource
+		go WatchResource(
+			dynamicClient,
+			resource.ToGVR(),
+			watcherConfig.Namespace,
+			resource.Kind, // Just a string now
+			pipeline,
+		)
+	}
 
 	fmt.Println("\n✅ All watchers active")
 	fmt.Println("⚡ Pipeline running. Press Ctrl+C to stop")
-	fmt.Println("================================================================\n")
+	fmt.Println("=======================================\n")
 	
 	// Block forever
 	select {}

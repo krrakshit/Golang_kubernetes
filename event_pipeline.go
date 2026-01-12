@@ -4,27 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-)
-
-// ResourceType defines the type of Kubernetes resource
-type ResourceType string
-
-const (
-	// Gateway API Resources
-	ResourceTypeGateway   ResourceType = "Gateway"
-	ResourceTypeHTTPRoute ResourceType = "HTTPRoute"
-
-	// Envoy Gateway CRDs
-	ResourceTypeEnvoyProxy           ResourceType = "EnvoyProxy"
-	ResourceTypeBackendTrafficPolicy ResourceType = "BackendTrafficPolicy"
-	ResourceTypeSecurityPolicy       ResourceType = "SecurityPolicy"
-	ResourceTypeClientTrafficPolicy  ResourceType = "ClientTrafficPolicy"
 )
 
 // EventType defines the type of event
@@ -39,7 +24,7 @@ const (
 // ResourceEvent represents a standardized event from any watcher
 type ResourceEvent struct {
 	Type          EventType
-	ResourceType  ResourceType
+	ResourceKind  string // Changed from ResourceType to string
 	Namespace     string
 	Name          string
 	Object        interface{}
@@ -67,7 +52,7 @@ type EventPipeline struct {
 type ChangeHandler func(event ResourceEvent, changes *ChangeDetails)
 
 // NewEventPipeline creates a new event pipeline
-func NewEventPipeline(bufferSize int) *EventPipeline {
+func NewEventPipeline(bufferSize int) *EventPipeline {	
 	return &EventPipeline{
 		eventChannel:   make(chan ResourceEvent, bufferSize),
 		previousStates: make(map[string]interface{}),
@@ -97,7 +82,7 @@ func (ep *EventPipeline) Start() {
 // processEvent processes a single event
 func (ep *EventPipeline) processEvent(event ResourceEvent) {
 	// Generate unique key for this resource
-	key := fmt.Sprintf("%s/%s/%s", event.ResourceType, event.Namespace, event.Name)
+	key := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
 
 	// Check if this is a metadata/spec change
 	if !ep.hasRelevantChanges(event) && event.Type != EventTypeAdded {
@@ -112,7 +97,7 @@ func (ep *EventPipeline) processEvent(event ResourceEvent) {
 	// Calculate changes
 	var changes *ChangeDetails
 	if event.Type == EventTypeModified && oldState != nil {
-		changes = ep.calculateChanges(oldState, event.Object, event.ResourceType)
+		changes = ep.calculateChanges(oldState, event.Object)
 	} else {
 		changes = &ChangeDetails{
 			MetadataChanges: make(map[string]interface{}),
@@ -157,7 +142,7 @@ func (ep *EventPipeline) hasRelevantChanges(event ResourceEvent) bool {
 }
 
 // calculateChanges calculates what changed between old and new objects
-func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}, resourceType ResourceType) *ChangeDetails {
+func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDetails {
 	changes := &ChangeDetails{
 		MetadataChanges: make(map[string]interface{}),
 		SpecChanges:     make(map[string]interface{}),
@@ -165,97 +150,10 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}, resourceTy
 		NewObject:       newObj,
 	}
 
-	// Handle different resource types
-	switch resourceType {
-	case ResourceTypeGateway:
-		ep.compareGateways(oldObj.(*gatewayv1.Gateway), newObj.(*gatewayv1.Gateway), changes)
-	case ResourceTypeHTTPRoute:
-		ep.compareHTTPRoutes(oldObj.(*gatewayv1.HTTPRoute), newObj.(*gatewayv1.HTTPRoute), changes)
-	case ResourceTypeBackendTrafficPolicy, ResourceTypeSecurityPolicy, ResourceTypeClientTrafficPolicy, ResourceTypeEnvoyProxy:
-		ep.compareUnstructured(oldObj.(*unstructured.Unstructured), newObj.(*unstructured.Unstructured), changes)
-	}
+	// Everything is unstructured
+	old := oldObj.(*unstructured.Unstructured)
+	new := newObj.(*unstructured.Unstructured)
 
-	return changes
-}
-
-// compareGateways compares two Gateway objects
-func (ep *EventPipeline) compareGateways(old, new *gatewayv1.Gateway, changes *ChangeDetails) {
-	// Compare labels
-	if !reflect.DeepEqual(old.Labels, new.Labels) {
-		changes.MetadataChanges["labels"] = map[string]interface{}{
-			"old": old.Labels,
-			"new": new.Labels,
-		}
-	}
-
-	// Compare annotations
-	if !reflect.DeepEqual(old.Annotations, new.Annotations) {
-		changes.MetadataChanges["annotations"] = map[string]interface{}{
-			"old": old.Annotations,
-			"new": new.Annotations,
-		}
-	}
-
-	// Compare GatewayClassName
-	if old.Spec.GatewayClassName != new.Spec.GatewayClassName {
-		changes.SpecChanges["gatewayClassName"] = map[string]interface{}{
-			"old": old.Spec.GatewayClassName,
-			"new": new.Spec.GatewayClassName,
-		}
-	}
-
-	// Compare Listeners
-	if !reflect.DeepEqual(old.Spec.Listeners, new.Spec.Listeners) {
-		changes.SpecChanges["listeners"] = map[string]interface{}{
-			"old": old.Spec.Listeners,
-			"new": new.Spec.Listeners,
-		}
-	}
-}
-
-// compareHTTPRoutes compares two HTTPRoute objects
-func (ep *EventPipeline) compareHTTPRoutes(old, new *gatewayv1.HTTPRoute, changes *ChangeDetails) {
-	// Compare labels
-	if !reflect.DeepEqual(old.Labels, new.Labels) {
-		changes.MetadataChanges["labels"] = map[string]interface{}{
-			"old": old.Labels,
-			"new": new.Labels,
-		}
-	}
-
-	// Compare annotations
-	if !reflect.DeepEqual(old.Annotations, new.Annotations) {
-		changes.MetadataChanges["annotations"] = map[string]interface{}{
-			"old": old.Annotations,
-			"new": new.Annotations,
-		}
-	}
-
-	// Compare Hostnames
-	if !reflect.DeepEqual(old.Spec.Hostnames, new.Spec.Hostnames) {
-		changes.SpecChanges["hostnames"] = map[string]interface{}{
-			"old": old.Spec.Hostnames,
-			"new": new.Spec.Hostnames,
-		}
-	}
-
-	// Compare ParentRefs
-	if !reflect.DeepEqual(old.Spec.ParentRefs, new.Spec.ParentRefs) {
-		changes.SpecChanges["parentRefs"] = map[string]interface{}{
-			"changed": true,
-		}
-	}
-
-	// Compare Rules
-	if !reflect.DeepEqual(old.Spec.Rules, new.Spec.Rules) {
-		changes.SpecChanges["rules"] = map[string]interface{}{
-			"changed": true,
-		}
-	}
-}
-
-// compareUnstructured compares two Unstructured objects (for Envoy Gateway CRDs)
-func (ep *EventPipeline) compareUnstructured(old, new *unstructured.Unstructured, changes *ChangeDetails) {
 	// Compare labels
 	if !reflect.DeepEqual(old.GetLabels(), new.GetLabels()) {
 		changes.MetadataChanges["labels"] = map[string]interface{}{
@@ -282,63 +180,84 @@ func (ep *EventPipeline) compareUnstructured(old, new *unstructured.Unstructured
 			"new": newSpec,
 		}
 	}
+
+	return changes
 }
 
 // logEvent logs the event to console
+// logEvent logs the event to console with pretty JSON formatting
 func (ep *EventPipeline) logEvent(event ResourceEvent, changes *ChangeDetails) {
 	fmt.Printf("\n📌 EVENT: %s | %s: %s/%s (at %s)\n",
 		event.Type,
-		event.ResourceType,
+		event.ResourceKind,
 		event.Namespace,
 		event.Name,
 		event.Timestamp.Format("15:04:05"),
 	)
 
 	if event.Type == EventTypeModified {
+		hasChanges := false
+
+		// Log metadata changes with pretty JSON
 		if len(changes.MetadataChanges) > 0 {
-			fmt.Println("   🔍 METADATA CHANGES:")
+			hasChanges = true
+			fmt.Println("\n   🔍 METADATA CHANGES:")
+			
 			for key, value := range changes.MetadataChanges {
-				fmt.Printf("      📝 %s changed\n", key)
-				if m, ok := value.(map[string]interface{}); ok {
-					if old, ok := m["old"]; ok {
-						fmt.Printf("         Old: %v\n", old)
-					}
-					if new, ok := m["new"]; ok {
-						fmt.Printf("         New: %v\n", new)
-					}
+				if changeMap, ok := value.(map[string]interface{}); ok {
+					fmt.Printf("      📝 %s\n", key)
+					formatted := FormatMapChange(changeMap)
+					fmt.Print(formatted)
+				} else {
+					fmt.Printf("      📝 %s: %v\n", key, value)
 				}
 			}
 		}
 
+		// Log spec changes with pretty JSON
 		if len(changes.SpecChanges) > 0 {
-			fmt.Println("   🔍 SPEC CHANGES:")
-			for key := range changes.SpecChanges {
-				fmt.Printf("      📝 %s changed\n", key)
+			hasChanges = true
+			fmt.Println("\n   🔍 SPEC CHANGES:")
+			
+			for key, value := range changes.SpecChanges {
+				if changeMap, ok := value.(map[string]interface{}); ok {
+					fmt.Printf("      📝 %s\n", key)
+					formatted := FormatMapChange(changeMap)
+					fmt.Print(formatted)
+				} else {
+					fmt.Printf("      📝 %s: %v\n", key, value)
+				}
 			}
 		}
 
-		if len(changes.MetadataChanges) == 0 && len(changes.SpecChanges) == 0 {
-			fmt.Println("   ℹ️  No significant changes detected")
+		if !hasChanges {
+			fmt.Println("\n   ℹ️  No significant changes detected")
 		}
 	} else if event.Type == EventTypeAdded {
-		fmt.Println("   → New resource created")
+		fmt.Println("\n   → New resource created")
+		
+		// Optionally show the full spec for new resources
+		if obj, ok := event.Object.(*unstructured.Unstructured); ok {
+			if spec, found, _ := unstructured.NestedMap(obj.Object, "spec"); found {
+				fmt.Println("\n   📋 Resource Spec:")
+				specJSON := MarshalToPrettyJSON(spec)
+				// Truncate if too long
+				specJSON = TruncateJSON(specJSON, 20)
+				fmt.Print(IndentJSON(specJSON, 6))
+				fmt.Println()
+			}
+		}
 	} else if event.Type == EventTypeDeleted {
-		fmt.Println("   → Resource deleted")
+		fmt.Println("\n   → Resource deleted")
 	}
 
-	fmt.Println("-----------------------------------------------------")
+	fmt.Println("\n" + strings.Repeat("-", 80))
 }
 
 // deepCopyObject creates a deep copy of an object
 func (ep *EventPipeline) deepCopyObject(obj interface{}) interface{} {
-	switch v := obj.(type) {
-	case *gatewayv1.Gateway:
-		return v.DeepCopy()
-	case *gatewayv1.HTTPRoute:
-		return v.DeepCopy()
-	case *unstructured.Unstructured:
-		return v.DeepCopy()
-	default:
-		return obj
+	if unstr, ok := obj.(*unstructured.Unstructured); ok {
+		return unstr.DeepCopy()
 	}
+	return obj
 }

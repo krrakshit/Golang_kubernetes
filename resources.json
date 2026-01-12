@@ -1,0 +1,47 @@
+{
+  "namespace": "default",
+  "resources": [
+    {
+      "group": "gateway.networking.k8s.io",
+      "version": "v1",
+      "resource": "gateways",
+      "kind": "Gateway",
+      "enabled": true
+    },
+    {
+      "group": "gateway.networking.k8s.io",
+      "version": "v1",
+      "resource": "httproutes",
+      "kind": "HTTPRoute",
+      "enabled": true
+    },
+    {
+      "group": "gateway.envoyproxy.io",
+      "version": "v1alpha1",
+      "resource": "envoyproxies",
+      "kind": "EnvoyProxy",
+      "enabled": true
+    },
+    {
+      "group": "gateway.envoyproxy.io",
+      "version": "v1alpha1",
+      "resource": "backendtrafficpolicies",
+      "kind": "BackendTrafficPolicy",
+      "enabled": true
+    },
+    {
+      "group": "gateway.envoyproxy.io",
+      "version": "v1alpha1",
+      "resource": "securitypolicies",
+      "kind": "SecurityPolicy",
+      "enabled": true
+    },
+    {
+      "group": "gateway.envoyproxy.io",
+      "version": "v1alpha1",
+      "resource": "clienttrafficpolicies",
+      "kind": "ClientTrafficPolicy",
+      "enabled": true
+    }
+  ]
+}
