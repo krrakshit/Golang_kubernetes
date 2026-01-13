@@ -184,8 +184,7 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 	return changes
 }
 
-// logEvent logs the event to console
-// logEvent logs the event to console with pretty JSON formatting
+// logEvent logs the event to console with detailed field-level changes
 func (ep *EventPipeline) logEvent(event ResourceEvent, changes *ChangeDetails) {
 	fmt.Printf("\n📌 EVENT: %s | %s: %s/%s (at %s)\n",
 		event.Type,
@@ -198,34 +197,48 @@ func (ep *EventPipeline) logEvent(event ResourceEvent, changes *ChangeDetails) {
 	if event.Type == EventTypeModified {
 		hasChanges := false
 
-		// Log metadata changes with pretty JSON
+		// Log metadata changes
 		if len(changes.MetadataChanges) > 0 {
 			hasChanges = true
 			fmt.Println("\n   🔍 METADATA CHANGES:")
 			
 			for key, value := range changes.MetadataChanges {
 				if changeMap, ok := value.(map[string]interface{}); ok {
-					fmt.Printf("      📝 %s\n", key)
-					formatted := FormatMapChange(changeMap)
-					fmt.Print(formatted)
-				} else {
-					fmt.Printf("      📝 %s: %v\n", key, value)
+					oldVal := changeMap["old"]
+					newVal := changeMap["new"]
+					
+					// Use diff library to show exact changes
+					fieldChanges, err := GetFieldChanges(oldVal, newVal)
+					if err == nil && len(fieldChanges) > 0 {
+						fmt.Printf("\n      📝 %s:\n", key)
+						PrintFieldChanges(fieldChanges)
+					} else {
+						// Fallback to simple diff
+						PrintDiff(key, oldVal, newVal)
+					}
 				}
 			}
 		}
 
-		// Log spec changes with pretty JSON
+		// Log spec changes
 		if len(changes.SpecChanges) > 0 {
 			hasChanges = true
 			fmt.Println("\n   🔍 SPEC CHANGES:")
 			
 			for key, value := range changes.SpecChanges {
 				if changeMap, ok := value.(map[string]interface{}); ok {
-					fmt.Printf("      📝 %s\n", key)
-					formatted := FormatMapChange(changeMap)
-					fmt.Print(formatted)
-				} else {
-					fmt.Printf("      📝 %s: %v\n", key, value)
+					oldVal := changeMap["old"]
+					newVal := changeMap["new"]
+					
+					// Use diff library to show exact changes
+					fieldChanges, err := GetFieldChanges(oldVal, newVal)
+					if err == nil && len(fieldChanges) > 0 {
+						fmt.Printf("\n      📝 %s:\n", key)
+						PrintFieldChanges(fieldChanges)
+					} else {
+						// Fallback to ASCII diff
+						PrintDiff(key, oldVal, newVal)
+					}
 				}
 			}
 		}
@@ -235,25 +248,12 @@ func (ep *EventPipeline) logEvent(event ResourceEvent, changes *ChangeDetails) {
 		}
 	} else if event.Type == EventTypeAdded {
 		fmt.Println("\n   → New resource created")
-		
-		// Optionally show the full spec for new resources
-		if obj, ok := event.Object.(*unstructured.Unstructured); ok {
-			if spec, found, _ := unstructured.NestedMap(obj.Object, "spec"); found {
-				fmt.Println("\n   📋 Resource Spec:")
-				specJSON := MarshalToPrettyJSON(spec)
-				// Truncate if too long
-				specJSON = TruncateJSON(specJSON, 20)
-				fmt.Print(IndentJSON(specJSON, 6))
-				fmt.Println()
-			}
-		}
 	} else if event.Type == EventTypeDeleted {
 		fmt.Println("\n   → Resource deleted")
 	}
 
 	fmt.Println("\n" + strings.Repeat("-", 80))
 }
-
 // deepCopyObject creates a deep copy of an object
 func (ep *EventPipeline) deepCopyObject(obj interface{}) interface{} {
 	if unstr, ok := obj.(*unstructured.Unstructured); ok {
