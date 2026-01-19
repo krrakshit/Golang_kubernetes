@@ -92,8 +92,8 @@ func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisMa
 	json.NewEncoder(w).Encode(response)
 }
 
-// handleChangesByVersion handles GET /changes/<version>?resource=<resource_kind>
-// Returns a specific change by its version number
+// handleChangesByVersion handles GET /changes/<generation_no>?resource=<resource_kind>
+// Returns a specific change by its Kubernetes object generation number
 func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -102,21 +102,23 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 
 	resourceKind := r.URL.Query().Get("resource")
 	if resourceKind == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "Missing 'resource' query parameter. Example: /changes/1?resource=Gateway")
+		writeErrorResponse(w, http.StatusBadRequest, "Missing 'resource' query parameter. Example: /changes/2?resource=Gateway")
 		return
 	}
 
-	// Extract version from path /changes/<version>
-	// r.URL.Path will be like "/changes/1"
-	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
-	if len(parts) < 3 || parts[2] == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "Missing version number in path. Example: /changes/1?resource=Gateway")
+	// Extract generation number from path /changes/<generation_no>
+	// r.URL.Path will be like "/changes/2"
+	pathParts := strings.Split(strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/changes/"), "/")
+	generationStr := pathParts[0]
+	
+	if generationStr == "" {
+		writeErrorResponse(w, http.StatusBadRequest, "Missing generation number in path. Example: /changes/2?resource=Gateway")
 		return
 	}
 
-	version, err := strconv.ParseInt(parts[2], 10, 64)
+	targetGeneration, err := strconv.ParseInt(generationStr, 10, 64)
 	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, "Invalid version number. Must be a positive integer.")
+		writeErrorResponse(w, http.StatusBadRequest, "Invalid generation number. Must be a positive integer.")
 		return
 	}
 
@@ -127,18 +129,22 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 		return
 	}
 
-	// Find change with matching version and resource kind
+	// Find change with matching Kubernetes object generation number and resource kind
 	var foundChange *ResourceChange
 	for i := range allChanges {
-		if allChanges[i].Version == version && allChanges[i].ResourceKind == resourceKind {
-			foundChange = &allChanges[i]
-			break
+		if allChanges[i].ResourceKind == resourceKind {
+			// Extract generation from the object's metadata
+			objGen := getObjectGeneration(allChanges[i].Object)
+			if objGen == targetGeneration {
+				foundChange = &allChanges[i]
+				break
+			}
 		}
 	}
 
 	if foundChange == nil {
-		writeErrorResponse(w, http.StatusNotFound,
-			fmt.Sprintf("Change not found for resource '%s' at version %d", resourceKind, version))
+		writeErrorResponse(w, http.StatusNotFound, 
+			fmt.Sprintf("No change found for resource '%s' at generation number %d", resourceKind, targetGeneration))
 		return
 	}
 
@@ -149,6 +155,54 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// getObjectGeneration extracts the generation number from a Kubernetes object
+func getObjectGeneration(obj interface{}) int64 {
+	if obj == nil {
+		return 0
+	}
+
+	// Try to convert to map (for unstructured objects)
+	if objMap, ok := obj.(map[string]interface{}); ok {
+		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
+			if metadataMap, ok := metadata.(map[string]interface{}); ok {
+				if gen, hasGen := metadataMap["generation"]; hasGen {
+					if genFloat, ok := gen.(float64); ok {
+						return int64(genFloat)
+					}
+					if genInt, ok := gen.(int64); ok {
+						return genInt
+					}
+					if genInt, ok := gen.(int); ok {
+						return int64(genInt)
+					}
+				}
+			}
+		}
+	}
+
+	// If it's an unstructured.Unstructured object
+	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
+		objMap := unstrObj.Object()
+		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
+			if metadataMap, ok := metadata.(map[string]interface{}); ok {
+				if gen, hasGen := metadataMap["generation"]; hasGen {
+					if genFloat, ok := gen.(float64); ok {
+						return int64(genFloat)
+					}
+					if genInt, ok := gen.(int64); ok {
+						return genInt
+					}
+					if genInt, ok := gen.(int); ok {
+						return int64(genInt)
+					}
+				}
+			}
+		}
+	}
+
+	return 0
 }
 
 // writeErrorResponse writes a formatted error response
