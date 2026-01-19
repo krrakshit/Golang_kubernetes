@@ -10,16 +10,16 @@ import (
 
 // ResourceConfig defines what resources to watch
 type ResourceConfig struct {
-	Group    string `json:"group"`
-	Version  string `json:"version"`
-	Resource string `json:"resource"`
-	Kind     string `json:"kind"`
-	Enabled  bool   `json:"enabled"`
+	Group      string   `json:"group"`
+	Version    string   `json:"version"`
+	Resource   string   `json:"resource"`
+	Kind       string   `json:"kind"`
+	Enabled    bool     `json:"enabled"`
+	Namespaces []string `json:"namespaces"` // Array of namespaces to watch. Empty means all namespaces
 }
 
 // WatcherConfig holds all resources to watch
 type WatcherConfig struct {
-	Namespace string           `json:"namespace"`
 	Resources []ResourceConfig `json:"resources"`
 }
 
@@ -100,49 +100,54 @@ func (wc *WatcherConfig) AddResource(resource ResourceConfig) {
 // GetDefaultWatcherConfig returns a default configuration (fallback)
 func GetDefaultWatcherConfig() *WatcherConfig {
 	return &WatcherConfig{
-		Namespace: "default",
 		Resources: []ResourceConfig{
 			{
-				Group:    "gateway.networking.k8s.io",
-				Version:  "v1",
-				Resource: "gateways",
-				Kind:     "Gateway",
-				Enabled:  true,
+				Group:      "gateway.networking.k8s.io",
+				Version:    "v1",
+				Resource:   "gateways",
+				Kind:       "Gateway",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 			{
-				Group:    "gateway.networking.k8s.io",
-				Version:  "v1",
-				Resource: "httproutes",
-				Kind:     "HTTPRoute",
-				Enabled:  true,
+				Group:      "gateway.networking.k8s.io",
+				Version:    "v1",
+				Resource:   "httproutes",
+				Kind:       "HTTPRoute",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 			{
-				Group:    "gateway.envoyproxy.io",
-				Version:  "v1alpha1",
-				Resource: "envoyproxies",
-				Kind:     "EnvoyProxy",
-				Enabled:  true,
+				Group:      "gateway.envoyproxy.io",
+				Version:    "v1alpha1",
+				Resource:   "envoyproxies",
+				Kind:       "EnvoyProxy",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 			{
-				Group:    "gateway.envoyproxy.io",
-				Version:  "v1alpha1",
-				Resource: "backendtrafficpolicies",
-				Kind:     "BackendTrafficPolicy",
-				Enabled:  true,
+				Group:      "gateway.envoyproxy.io",
+				Version:    "v1alpha1",
+				Resource:   "backendtrafficpolicies",
+				Kind:       "BackendTrafficPolicy",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 			{
-				Group:    "gateway.envoyproxy.io",
-				Version:  "v1alpha1",
-				Resource: "securitypolicies",
-				Kind:     "SecurityPolicy",
-				Enabled:  true,
+				Group:      "gateway.envoyproxy.io",
+				Version:    "v1alpha1",
+				Resource:   "securitypolicies",
+				Kind:       "SecurityPolicy",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 			{
-				Group:    "gateway.envoyproxy.io",
-				Version:  "v1alpha1",
-				Resource: "clienttrafficpolicies",
-				Kind:     "ClientTrafficPolicy",
-				Enabled:  true,
+				Group:      "gateway.envoyproxy.io",
+				Version:    "v1alpha1",
+				Resource:   "clienttrafficpolicies",
+				Kind:       "ClientTrafficPolicy",
+				Enabled:    true,
+				Namespaces: []string{"default"},
 			},
 		},
 	}

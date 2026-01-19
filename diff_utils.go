@@ -115,6 +115,137 @@ func PrintDiff(label string, old, new interface{}) {
 	fmt.Println()
 }
 
+// LogChanges logs exact changes in a readable format
+func LogChanges(old, new interface{}, label string) {
+	oldJSON, err := json.Marshal(old)
+	if err != nil {
+		fmt.Printf("Error marshaling old: %v\n", err)
+		return
+	}
+
+	newJSON, err := json.Marshal(new)
+	if err != nil {
+		fmt.Printf("Error marshaling new: %v\n", err)
+		return
+	}
+
+	differ := gojsondiff.New()
+	diff, err := differ.Compare(oldJSON, newJSON)
+	if err != nil {
+		fmt.Printf("Error comparing: %v\n", err)
+		return
+	}
+
+	if !diff.Modified() {
+		fmt.Printf("      ℹ️  No changes in %s\n", label)
+		return
+	}
+
+	fmt.Printf("\n📋 Changes in %s:\n", label)
+	deltas := diff.Deltas()
+	logDeltasRecursive(deltas, "")
+	fmt.Println()
+}
+
+// logDeltasRecursive recursively logs all deltas with their actual values
+func logDeltasRecursive(deltas []gojsondiff.Delta, indent string) {
+	for i, delta := range deltas {
+		path := ""
+
+		switch d := delta.(type) {
+		case *gojsondiff.Added:
+			if postDelta, ok := delta.(gojsondiff.PostDelta); ok {
+				path = postDelta.PostPosition().String()
+			}
+			fmt.Printf("%s  [%d] ➕ ADDED: %s\n", indent, i+1, path)
+			fmt.Printf("%s      Value: %s\n", indent, formatValueCompact(d.Value))
+
+		case *gojsondiff.Deleted:
+			if preDelta, ok := delta.(gojsondiff.PreDelta); ok {
+				path = preDelta.PrePosition().String()
+			}
+			fmt.Printf("%s  [%d] ➖ DELETED: %s\n", indent, i+1, path)
+			fmt.Printf("%s      Value: %s\n", indent, formatValueCompact(d.Value))
+
+		case *gojsondiff.Modified:
+			if postDelta, ok := delta.(gojsondiff.PostDelta); ok {
+				path = postDelta.PostPosition().String()
+			}
+			fmt.Printf("%s  [%d] ✏️  MODIFIED: %s\n", indent, i+1, path)
+			fmt.Printf("%s      OLD: %s\n", indent, formatValueCompact(d.OldValue))
+			fmt.Printf("%s      NEW: %s\n", indent, formatValueCompact(d.NewValue))
+
+		case *gojsondiff.TextDiff:
+			if postDelta, ok := delta.(gojsondiff.PostDelta); ok {
+				path = postDelta.PostPosition().String()
+			}
+			fmt.Printf("%s  [%d] ✏️  TEXT DIFF: %s\n", indent, i+1, path)
+			fmt.Printf("%s      OLD: %s\n", indent, formatValueCompact(d.OldValue))
+			fmt.Printf("%s      NEW: %s\n", indent, formatValueCompact(d.NewValue))
+			fmt.Printf("%s      Diff: %s\n", indent, d.DiffString())
+
+		case *gojsondiff.Object:
+			if postDelta, ok := delta.(gojsondiff.PostDelta); ok {
+				path = postDelta.PostPosition().String()
+			}
+			fmt.Printf("%s  [%d] 🔧 OBJECT: %s\n", indent, i+1, path)
+			if len(d.Deltas) > 0 {
+				logDeltasRecursive(d.Deltas, indent+"     ")
+			}
+
+		case *gojsondiff.Array:
+			if postDelta, ok := delta.(gojsondiff.PostDelta); ok {
+				path = postDelta.PostPosition().String()
+			}
+			fmt.Printf("%s  [%d] 📋 ARRAY: %s\n", indent, i+1, path)
+			if len(d.Deltas) > 0 {
+				logDeltasRecursive(d.Deltas, indent+"     ")
+			}
+
+		case *gojsondiff.Moved:
+			fmt.Printf("%s  [%d] 🔄 MOVED\n", indent, i+1)
+			fmt.Printf("%s      From: %v\n", indent, d.PrePosition())
+			fmt.Printf("%s      To: %v\n", indent, d.PostPosition())
+
+		default:
+			fmt.Printf("%s  [%d] ❓ UNKNOWN (%T)\n", indent, i+1, delta)
+		}
+	}
+}
+
+// formatValueCompact formats values in a compact readable way
+func formatValueCompact(val interface{}) string {
+	if val == nil {
+		return "<nil>"
+	}
+
+	switch v := val.(type) {
+	case string:
+		if len(v) > 100 {
+			return fmt.Sprintf(`"%s..."`, v[:100])
+		}
+		return fmt.Sprintf(`"%s"`, v)
+	case bool, float64, int:
+		return fmt.Sprintf("%v", v)
+	case map[string]interface{}, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", val)
+		}
+		jsonStr := string(jsonBytes)
+		if len(jsonStr) > 100 {
+			return jsonStr[:100] + "..."
+		}
+		return jsonStr
+	default:
+		str := fmt.Sprintf("%v", val)
+		if len(str) > 100 {
+			return str[:100] + "..."
+		}
+		return str
+	}
+}
+
 // GetFieldChanges extracts individual field changes with their paths
 func GetFieldChanges(old, new interface{}) ([]FieldChange, error) {
 	oldJSON, _ := json.Marshal(old)
@@ -132,7 +263,13 @@ func GetFieldChanges(old, new interface{}) ([]FieldChange, error) {
 
 	changes := make([]FieldChange, 0)
 	deltas := diff.Deltas()
+	changes = extractChangesRecursive(deltas, changes)
 
+	return changes, nil
+}
+
+// extractChangesRecursive recursively extracts all changes from deltas
+func extractChangesRecursive(deltas []gojsondiff.Delta, changes []FieldChange) []FieldChange {
 	for _, delta := range deltas {
 		var change FieldChange
 
@@ -144,41 +281,36 @@ func GetFieldChanges(old, new interface{}) ([]FieldChange, error) {
 		}
 
 		// Determine the type and values based on delta type
-		switch delta.(type) {
+		switch d := delta.(type) {
 		case *gojsondiff.Object:
-			change.Type = "MODIFIED"
-			// For objects, we'll just note they changed
-			change.OldValue = "<object modified>"
-			change.NewValue = "<object modified>"
+			// Recursively process object's nested deltas
+			changes = extractChangesRecursive(d.Deltas, changes)
+			continue
 
 		case *gojsondiff.Array:
-			change.Type = "MODIFIED"
-			change.OldValue = "<array modified>"
-			change.NewValue = "<array modified>"
+			// Recursively process array's nested deltas
+			changes = extractChangesRecursive(d.Deltas, changes)
+			continue
 
 		case *gojsondiff.Added:
-			d := delta.(*gojsondiff.Added)
 			change.Type = "ADDED"
 			change.NewValue = d.Value
 
 		case *gojsondiff.Deleted:
-			d := delta.(*gojsondiff.Deleted)
 			change.Type = "REMOVED"
 			change.OldValue = d.Value
 
 		case *gojsondiff.Modified:
-			d := delta.(*gojsondiff.Modified)
 			change.Type = "MODIFIED"
 			change.OldValue = d.OldValue
 			change.NewValue = d.NewValue
 
 		case *gojsondiff.TextDiff:
 			change.Type = "MODIFIED"
-			change.OldValue = "<text changed>"
-			change.NewValue = "<text changed>"
+			change.OldValue = d.OldValue
+			change.NewValue = d.NewValue
 
 		case *gojsondiff.Moved:
-			d := delta.(*gojsondiff.Moved)
 			change.Type = "MOVED"
 			change.NewValue = fmt.Sprintf("moved from %v to %v", d.PrePosition(), d.PostPosition())
 
@@ -190,7 +322,7 @@ func GetFieldChanges(old, new interface{}) ([]FieldChange, error) {
 		changes = append(changes, change)
 	}
 
-	return changes, nil
+	return changes
 }
 
 // PrintFieldChanges prints individual field changes in a readable format

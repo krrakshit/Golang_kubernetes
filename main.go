@@ -13,6 +13,9 @@ import (
 func main() {
 	// Command-line flags
 	configFile := flag.String("config", "resources.json", "Path to resources configuration file")
+	redisAddr := flag.String("redis", "localhost:6379", "Redis server address")
+	maxChanges := flag.Int("max-changes", 100, "Maximum number of changes to keep in queue")
+	httpPort := flag.String("port", "8080", "HTTP server port")
 	flag.Parse()
 
 	home, _ := os.UserHomeDir()
@@ -33,10 +36,22 @@ func main() {
 	fmt.Println("=======================================")
 
 	// ========================================================================
+	// STEP 0: Initialize Redis Manager
+	// ========================================================================
+	fmt.Printf("🔗 Connecting to Redis at %s...\n", *redisAddr)
+	redisManager, err := NewRedisManager(*redisAddr, "annotation_changes", *maxChanges)
+	if err != nil {
+		fmt.Printf("❌ Failed to connect to Redis: %v\n", err)
+		panic(err)
+	}
+	fmt.Println("✅ Redis connected successfully")
+	defer redisManager.Close()
+
+	// ========================================================================
 	// STEP 1: Load configuration from JSON file
 	// ========================================================================
 	fmt.Printf("📄 Loading configuration from: %s\n", *configFile)
-	
+
 	watcherConfig, err := LoadConfigFromFile(*configFile)
 	if err != nil {
 		fmt.Printf("⚠️  Failed to load config file: %v\n", err)
@@ -49,12 +64,9 @@ func main() {
 	// ========================================================================
 	// STEP 2: Create the Event Pipeline
 	// ========================================================================
-	pipeline := NewEventPipeline(1000)
+	pipeline := NewEventPipeline(1000, redisManager)
+	// ========================================================================
 
-	// ========================================================================
-	// STEP 3: Register custom handlers (using string kind now)
-	// ========================================================================
-	
 	// Handler 1: Alert on Gateway changes
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
 		if event.ResourceKind == "Gateway" && event.Type == EventTypeModified {
@@ -66,7 +78,7 @@ func main() {
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
 		if event.ResourceKind == "SecurityPolicy" {
 			if len(changes.SpecChanges) > 0 {
-				fmt.Printf("🔒 SECURITY: SecurityPolicy %s/%s spec changed!\n", 
+				fmt.Printf("🔒 SECURITY: SecurityPolicy %s/%s spec changed!\n",
 					event.Namespace, event.Name)
 			}
 		}
@@ -75,7 +87,7 @@ func main() {
 	// Handler 3: Log all changes
 	pipeline.RegisterHandler(func(event ResourceEvent, changes *ChangeDetails) {
 		if event.Type == EventTypeModified {
-			fmt.Printf("📊 CHANGE DETECTED: %s %s/%s\n", 
+			fmt.Printf("📊 CHANGE DETECTED: %s %s/%s\n",
 				event.ResourceKind, event.Namespace, event.Name)
 		}
 	})
@@ -89,28 +101,33 @@ func main() {
 	// STEP 5: Start watchers for enabled resources
 	// ========================================================================
 	fmt.Println("\n📡 Starting Watchers...")
-	fmt.Printf("   Namespace: %s\n", watcherConfig.Namespace)
 	fmt.Println("   Enabled Resources:")
-	
+
 	enabledResources := watcherConfig.GetEnabledResources()
-	
+
 	if len(enabledResources) == 0 {
 		fmt.Println("   ⚠️  No resources enabled in configuration!")
 		os.Exit(1)
 	}
-	
+
 	for _, resource := range enabledResources {
-		fmt.Printf("      ✓ %s (%s/%s)\n", 
-			resource.Kind, 
-			resource.Group, 
-			resource.Resource)
-		
-		// Start watcher for this resource
+		namespaceStr := "all namespaces"
+		if len(resource.Namespaces) > 0 {
+			namespaceStr = fmt.Sprintf("%v", resource.Namespaces)
+		}
+
+		fmt.Printf("      ✓ %s (%s/%s) - Watching %s\n",
+			resource.Kind,
+			resource.Group,
+			resource.Resource,
+			namespaceStr)
+
+		// Start watcher for this resource with its namespaces
 		go WatchResource(
 			dynamicClient,
 			resource.ToGVR(),
-			watcherConfig.Namespace,
-			resource.Kind, // Just a string now
+			resource.Namespaces, // Pass namespace array
+			resource.Kind,
 			pipeline,
 		)
 	}
@@ -118,7 +135,12 @@ func main() {
 	fmt.Println("\n✅ All watchers active")
 	fmt.Println("⚡ Pipeline running. Press Ctrl+C to stop")
 	fmt.Println("=======================================\n")
-	
+
+	// ========================================================================
+	// STEP 6: Start HTTP server (non-blocking)
+	// ========================================================================
+	go StartHTTPServer(redisManager, *httpPort)
+
 	// Block forever
 	select {}
 }

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
@@ -46,17 +45,19 @@ type EventPipeline struct {
 	previousStates map[string]interface{} // unified state storage
 	stateMutex     sync.RWMutex
 	changeHandlers []ChangeHandler
+	redisManager   *RedisManager
 }
 
 // ChangeHandler is a function that handles change events
 type ChangeHandler func(event ResourceEvent, changes *ChangeDetails)
 
 // NewEventPipeline creates a new event pipeline
-func NewEventPipeline(bufferSize int) *EventPipeline {	
+func NewEventPipeline(bufferSize int, redisManager *RedisManager) *EventPipeline {
 	return &EventPipeline{
 		eventChannel:   make(chan ResourceEvent, bufferSize),
 		previousStates: make(map[string]interface{}),
 		changeHandlers: make([]ChangeHandler, 0),
+		redisManager:   redisManager,
 	}
 }
 
@@ -106,8 +107,8 @@ func (ep *EventPipeline) processEvent(event ResourceEvent) {
 		}
 	}
 
-	// Log the event
-	ep.logEvent(event, changes)
+	// Store full object changes to Redis with versioning
+	ep.storeVersionedResourceChange(event, oldState, changes)
 
 	// Call all registered handlers
 	for _, handler := range ep.changeHandlers {
@@ -184,76 +185,44 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 	return changes
 }
 
-// logEvent logs the event to console with detailed field-level changes
-func (ep *EventPipeline) logEvent(event ResourceEvent, changes *ChangeDetails) {
-	fmt.Printf("\n📌 EVENT: %s | %s: %s/%s (at %s)\n",
-		event.Type,
-		event.ResourceKind,
-		event.Namespace,
-		event.Name,
-		event.Timestamp.Format("15:04:05"),
-	)
-
-	if event.Type == EventTypeModified {
-		hasChanges := false
-
-		// Log metadata changes
-		if len(changes.MetadataChanges) > 0 {
-			hasChanges = true
-			fmt.Println("\n   🔍 METADATA CHANGES:")
-			
-			for key, value := range changes.MetadataChanges {
-				if changeMap, ok := value.(map[string]interface{}); ok {
-					oldVal := changeMap["old"]
-					newVal := changeMap["new"]
-					
-					// Use diff library to show exact changes
-					fieldChanges, err := GetFieldChanges(oldVal, newVal)
-					if err == nil && len(fieldChanges) > 0 {
-						fmt.Printf("\n      📝 %s:\n", key)
-						PrintFieldChanges(fieldChanges)
-					} else {
-						// Fallback to simple diff
-						PrintDiff(key, oldVal, newVal)
-					}
-				}
-			}
-		}
-
-		// Log spec changes
-		if len(changes.SpecChanges) > 0 {
-			hasChanges = true
-			fmt.Println("\n   🔍 SPEC CHANGES:")
-			
-			for key, value := range changes.SpecChanges {
-				if changeMap, ok := value.(map[string]interface{}); ok {
-					oldVal := changeMap["old"]
-					newVal := changeMap["new"]
-					
-					// Use diff library to show exact changes
-					fieldChanges, err := GetFieldChanges(oldVal, newVal)
-					if err == nil && len(fieldChanges) > 0 {
-						fmt.Printf("\n      📝 %s:\n", key)
-						PrintFieldChanges(fieldChanges)
-					} else {
-						// Fallback to ASCII diff
-						PrintDiff(key, oldVal, newVal)
-					}
-				}
-			}
-		}
-
-		if !hasChanges {
-			fmt.Println("\n   ℹ️  No significant changes detected")
-		}
-	} else if event.Type == EventTypeAdded {
-		fmt.Println("\n   → New resource created")
-	} else if event.Type == EventTypeDeleted {
-		fmt.Println("\n   → Resource deleted")
+// storeVersionedResourceChange stores the full object as a versioned change in the queue
+func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldObj interface{}, changes *ChangeDetails) {
+	if ep.redisManager == nil {
+		return
 	}
 
-	fmt.Println("\n" + strings.Repeat("-", 80))
+	// Create resource key (kind/namespace/name)
+	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
+
+	// Prepare changes map from old to new
+	changesMap := make(map[string]interface{})
+
+	// Add metadata changes
+	if len(changes.MetadataChanges) > 0 {
+		changesMap["metadata"] = changes.MetadataChanges
+	}
+
+	// Add spec changes
+	if len(changes.SpecChanges) > 0 {
+		changesMap["spec"] = changes.SpecChanges
+	}
+
+	// Create resource change record with full object
+	resourceChange := ResourceChange{
+		ResourceKind: event.ResourceKind,
+		Namespace:    event.Namespace,
+		ResourceName: event.Name,
+		Timestamp:    time.Now(),
+		Object:       event.Object,
+		Changes:      changesMap,
+	}
+
+	// Push to queue with versioning
+	if err := ep.redisManager.PushResourceChange(resourceKey, resourceChange); err != nil {
+		fmt.Printf("⚠️  Failed to store change in queue: %v\n", err)
+	}
 }
+
 // deepCopyObject creates a deep copy of an object
 func (ep *EventPipeline) deepCopyObject(obj interface{}) interface{} {
 	if unstr, ok := obj.(*unstructured.Unstructured); ok {
