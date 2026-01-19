@@ -48,6 +48,31 @@ func NewRedisManager(redisAddr string, queueName string, maxSize int) (*RedisMan
 	}, nil
 }
 
+// PushObject pushes a direct object to the global queue without versioning metadata
+func (rm *RedisManager) PushObject(resourceKey string, obj interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Marshal object to JSON
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return fmt.Errorf("failed to marshal object: %w", err)
+	}
+
+	// Push to queue (LPUSH adds to the beginning - most recent first)
+	if err := rm.client.LPush(ctx, rm.queueName, string(data)).Err(); err != nil {
+		return fmt.Errorf("failed to push to queue: %w", err)
+	}
+
+	// Trim queue to maxSize (keep only the most recent N objects)
+	if err := rm.client.LTrim(ctx, rm.queueName, 0, int64(rm.maxSize-1)).Err(); err != nil {
+		return fmt.Errorf("failed to trim queue: %w", err)
+	}
+
+	rm.logObject(obj)
+	return nil
+}
+
 // PushResourceChange pushes a new resource change to the global change queue
 // Queue has fixed size - oldest changes are automatically removed when queue is full
 func (rm *RedisManager) PushResourceChange(resourceKey string, change ResourceChange) error {
@@ -106,6 +131,31 @@ func (rm *RedisManager) GetResourceChanges(resourceKey string) ([]ResourceChange
 	}
 
 	return changes, nil
+}
+
+// GetAllObjects retrieves all objects from the global queue as raw objects
+func (rm *RedisManager) GetAllObjects() ([]interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get all items from the queue
+	results, err := rm.client.LRange(ctx, rm.queueName, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get objects from queue: %w", err)
+	}
+
+	objects := make([]interface{}, 0, len(results))
+
+	// Unmarshal each result as a generic object
+	for _, result := range results {
+		var obj interface{}
+		if err := json.Unmarshal([]byte(result), &obj); err != nil {
+			continue // Skip invalid JSON
+		}
+		objects = append(objects, obj)
+	}
+
+	return objects, nil
 }
 
 // GetCurrentVersion returns the current version number for a resource (count from queue)
@@ -256,4 +306,10 @@ func (rm *RedisManager) PrintLastNChanges(n int) error {
 
 	fmt.Println("\n================================================================================")
 	return nil
+}
+
+// logObject logs a direct object to console in a simple format
+func (rm *RedisManager) logObject(obj interface{}) {
+	objJSON, _ := json.MarshalIndent(obj, "", "  ")
+	fmt.Println(string(objJSON))
 }

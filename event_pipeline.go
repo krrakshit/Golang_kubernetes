@@ -186,6 +186,7 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 }
 
 // storeVersionedResourceChange stores the full object as a versioned change in the queue
+// storeVersionedResourceChange stores the full object directly in Redis queue
 func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldObj interface{}, changes *ChangeDetails) {
 	if ep.redisManager == nil {
 		return
@@ -194,32 +195,9 @@ func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldOb
 	// Create resource key (kind/namespace/name)
 	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
 
-	// Prepare changes map from old to new
-	changesMap := make(map[string]interface{})
-
-	// Add metadata changes
-	if len(changes.MetadataChanges) > 0 {
-		changesMap["metadata"] = changes.MetadataChanges
-	}
-
-	// Add spec changes
-	if len(changes.SpecChanges) > 0 {
-		changesMap["spec"] = changes.SpecChanges
-	}
-
-	// Create resource change record with full object
-	resourceChange := ResourceChange{
-		ResourceKind: event.ResourceKind,
-		Namespace:    event.Namespace,
-		ResourceName: event.Name,
-		Timestamp:    time.Now(),
-		Object:       event.Object,
-		Changes:      changesMap,
-	}
-
-	// Push to queue with versioning
-	if err := ep.redisManager.PushResourceChange(resourceKey, resourceChange); err != nil {
-		fmt.Printf("⚠️  Failed to store change in queue: %v\n", err)
+	// Push object directly to queue
+	if err := ep.redisManager.PushObject(resourceKey, event.Object); err != nil {
+		fmt.Printf("⚠️  Failed to store object in queue: %v\n", err)
 	}
 }
 

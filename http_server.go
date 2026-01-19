@@ -16,6 +16,16 @@ type HTTPResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
+// ObjectResponse wraps an object in the data response
+type ObjectResponse struct {
+	Object interface{} `json:"object"`
+}
+
+// ObjectsResponse wraps objects in the data response
+type ObjectsResponse struct {
+	Objects []interface{} `json:"objects"`
+}
+
 // ChangesResponse represents the response for /changes endpoint
 type ChangesResponse struct {
 	Resource string           `json:"resource"`
@@ -51,7 +61,7 @@ func StartHTTPServer(redisManager *RedisManager, port string) error {
 }
 
 // handleChanges handles GET /changes?resource=<resource_kind>
-// Returns all changes from the queue for a specific resource kind
+// Returns all objects from the queue for a specific resource kind
 func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -64,27 +74,26 @@ func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisMa
 		return
 	}
 
-	// Get all changes from queue
-	allChanges, err := redisManager.GetResourceChanges("")
+	// Get all objects from queue
+	allObjects, err := redisManager.GetAllObjects()
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve changes: %v", err))
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve objects: %v", err))
 		return
 	}
 
 	// Filter by resource kind
-	filteredChanges := []ResourceChange{}
-	for _, change := range allChanges {
-		if change.ResourceKind == resourceKind {
-			filteredChanges = append(filteredChanges, change)
+	filteredObjects := []interface{}{}
+	for _, obj := range allObjects {
+		objKind := getObjectKind(obj)
+		if objKind == resourceKind {
+			filteredObjects = append(filteredObjects, obj)
 		}
 	}
 
 	response := HTTPResponse{
 		Success: true,
-		Data: ChangesResponse{
-			Resource: resourceKind,
-			Count:    len(filteredChanges),
-			Changes:  filteredChanges,
+		Data: ObjectsResponse{
+			Objects: filteredObjects,
 		},
 	}
 
@@ -122,35 +131,38 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 		return
 	}
 
-	// Get all changes from queue
-	allChanges, err := redisManager.GetResourceChanges("")
+	// Get all objects from queue
+	allObjects, err := redisManager.GetAllObjects()
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve changes: %v", err))
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve objects: %v", err))
 		return
 	}
 
-	// Find change with matching Kubernetes object generation number and resource kind
-	var foundChange *ResourceChange
-	for i := range allChanges {
-		if allChanges[i].ResourceKind == resourceKind {
+	// Find object with matching Kubernetes object generation number and resource kind
+	var foundObject interface{}
+	for _, obj := range allObjects {
+		objKind := getObjectKind(obj)
+		if objKind == resourceKind {
 			// Extract generation from the object's metadata
-			objGen := getObjectGeneration(allChanges[i].Object)
+			objGen := getObjectGeneration(obj)
 			if objGen == targetGeneration {
-				foundChange = &allChanges[i]
+				foundObject = obj
 				break
 			}
 		}
 	}
 
-	if foundChange == nil {
+	if foundObject == nil {
 		writeErrorResponse(w, http.StatusNotFound,
-			fmt.Sprintf("No change found for resource '%s' at generation number %d", resourceKind, targetGeneration))
+			fmt.Sprintf("No object found for resource '%s' at generation number %d", resourceKind, targetGeneration))
 		return
 	}
 
 	response := HTTPResponse{
 		Success: true,
-		Data:    foundChange,
+		Data: ObjectResponse{
+			Object: foundObject,
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -203,6 +215,34 @@ func getObjectGeneration(obj interface{}) int64 {
 	}
 
 	return 0
+}
+
+// getObjectKind extracts the kind from a Kubernetes object
+func getObjectKind(obj interface{}) string {
+	if obj == nil {
+		return ""
+	}
+
+	// Try to convert to map (for unstructured objects)
+	if objMap, ok := obj.(map[string]interface{}); ok {
+		if kind, hasKind := objMap["kind"]; hasKind {
+			if kindStr, ok := kind.(string); ok {
+				return kindStr
+			}
+		}
+	}
+
+	// If it's an unstructured.Unstructured object
+	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
+		objMap := unstrObj.Object()
+		if kind, hasKind := objMap["kind"]; hasKind {
+			if kindStr, ok := kind.(string); ok {
+				return kindStr
+			}
+		}
+	}
+
+	return ""
 }
 
 // writeErrorResponse writes a formatted error response
