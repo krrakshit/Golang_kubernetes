@@ -110,7 +110,7 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 	// r.URL.Path will be like "/changes/2"
 	pathParts := strings.Split(strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/changes/"), "/")
 	generationStr := pathParts[0]
-	
+
 	if generationStr == "" {
 		writeErrorResponse(w, http.StatusBadRequest, "Missing generation number in path. Example: /changes/2?resource=Gateway")
 		return
@@ -143,7 +143,7 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 	}
 
 	if foundChange == nil {
-		writeErrorResponse(w, http.StatusNotFound, 
+		writeErrorResponse(w, http.StatusNotFound,
 			fmt.Sprintf("No change found for resource '%s' at generation number %d", resourceKind, targetGeneration))
 		return
 	}
