@@ -18,9 +18,9 @@ type HTTPResponse struct {
 
 // ChangesResponse represents the response for /changes endpoint
 type ChangesResponse struct {
-	Resource string            `json:"resource"`
-	Count    int               `json:"count"`
-	Changes  []ResourceChange  `json:"changes"`
+	Resource string           `json:"resource"`
+	Count    int              `json:"count"`
+	Changes  []ResourceChange `json:"changes"`
 }
 
 // StartHTTPServer starts the HTTP server with change endpoints
@@ -137,7 +137,7 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 	}
 
 	if foundChange == nil {
-		writeErrorResponse(w, http.StatusNotFound, 
+		writeErrorResponse(w, http.StatusNotFound,
 			fmt.Sprintf("Change not found for resource '%s' at version %d", resourceKind, version))
 		return
 	}
