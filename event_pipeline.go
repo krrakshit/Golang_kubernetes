@@ -185,6 +185,21 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 	return changes
 }
 
+// getObjectNameNamespace extracts name and namespace from a Kubernetes object
+func getObjectNameNamespace(obj interface{}) (string, string) {
+	if obj == nil {
+		return "", ""
+	}
+	if objMap, ok := obj.(map[string]interface{}); ok {
+		if metadata, ok := objMap["metadata"].(map[string]interface{}); ok {
+			name, _ := metadata["name"].(string)
+			namespace, _ := metadata["namespace"].(string)
+			return name, namespace
+		}
+	}
+	return "", ""
+}
+
 // storeVersionedResourceChange stores the full object directly in Redis queue
 // Only stores if the object's generation has changed
 func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldObj interface{}, changes *ChangeDetails) {
@@ -205,6 +220,18 @@ func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldOb
 	if oldObj != nil && newGen == oldGen {
 		fmt.Printf("⏭️  Skipping - Generation unchanged (still %d)\n\n", newGen)
 		return // Skip storing if generation hasn't changed
+	}
+
+	// Deduplication: check Redis for same resource/generation
+	allObjects, _ := ep.redisManager.GetAllObjects()
+	for _, obj := range allObjects {
+		objKind := getObjectKind(obj)
+		objGen := getObjectGenerationFromEvent(obj)
+		name, ns := getObjectNameNamespace(obj)
+		if objKind == event.ResourceKind && objGen == newGen && name == event.Name && ns == event.Namespace {
+			fmt.Printf("⏭️  Skipping - Duplicate in Redis for %s gen %d\n\n", resourceKey, newGen)
+			return
+		}
 	}
 
 	// Push object directly to queue
