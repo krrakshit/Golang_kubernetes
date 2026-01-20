@@ -185,7 +185,6 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 	return changes
 }
 
-// storeVersionedResourceChange stores the full object as a versioned change in the queue
 // storeVersionedResourceChange stores the full object directly in Redis queue
 // Only stores if the object's generation has changed
 func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldObj interface{}, changes *ChangeDetails) {
@@ -197,17 +196,28 @@ func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldOb
 	newGen := getObjectGenerationFromEvent(event.Object)
 	oldGen := getObjectGenerationFromEvent(oldObj)
 
+	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
+
+	// Debug logging
+	fmt.Printf("📊 Generation Check - Resource: %s | Old Gen: %d | New Gen: %d\n", resourceKey, oldGen, newGen)
+
 	// Only store if generation changed or if this is a new object
 	if oldObj != nil && newGen == oldGen {
+		fmt.Printf("⏭️  Skipping - Generation unchanged (still %d)\n\n", newGen)
 		return // Skip storing if generation hasn't changed
 	}
 
-	// Create resource key (kind/namespace/name)
-	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
-
 	// Push object directly to queue
-	if err := ep.redisManager.PushObject(resourceKey, event.Object); err != nil {
-		fmt.Printf("⚠️  Failed to store object in queue: %v\n", err)
+	if newGen > 0 {
+		fmt.Printf("✅ Storing object with generation %d\n\n", newGen)
+		if err := ep.redisManager.PushObject(resourceKey, event.Object); err != nil {
+			fmt.Printf("⚠️  Failed to store object in queue: %v\n", err)
+		}
+	} else {
+		fmt.Printf("ℹ️  No generation found, storing anyway\n\n")
+		if err := ep.redisManager.PushObject(resourceKey, event.Object); err != nil {
+			fmt.Printf("⚠️  Failed to store object in queue: %v\n", err)
+		}
 	}
 }
 
@@ -217,8 +227,9 @@ func getObjectGenerationFromEvent(obj interface{}) int64 {
 		return 0
 	}
 
-	// Try to convert to map (for unstructured objects)
-	if objMap, ok := obj.(map[string]interface{}); ok {
+	// First try as unstructured.Unstructured (most common case)
+	if unstr, ok := obj.(*unstructured.Unstructured); ok {
+		objMap := unstr.UnstructuredContent()
 		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
 			if metadataMap, ok := metadata.(map[string]interface{}); ok {
 				if gen, hasGen := metadataMap["generation"]; hasGen {
@@ -234,11 +245,11 @@ func getObjectGenerationFromEvent(obj interface{}) int64 {
 				}
 			}
 		}
+		return 0
 	}
 
-	// If it's an unstructured.Unstructured object
-	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
-		objMap := unstrObj.Object()
+	// Try to convert to map (for other object types)
+	if objMap, ok := obj.(map[string]interface{}); ok {
 		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
 			if metadataMap, ok := metadata.(map[string]interface{}); ok {
 				if gen, hasGen := metadataMap["generation"]; hasGen {
