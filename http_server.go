@@ -61,7 +61,8 @@ func StartHTTPServer(redisManager *RedisManager, port string) error {
 }
 
 // handleChanges handles GET /changes?resource=<resource_kind>
-// Returns all objects from the queue for a specific resource kind
+// Returns all objects from the queue for a specific resource kind in YAML format
+// Format: timestamp (from creationTimestamp), generation, then YAML for each object
 func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -90,19 +91,20 @@ func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisMa
 		}
 	}
 
-	response := HTTPResponse{
-		Success: true,
-		Data: ObjectsResponse{
-			Objects: filteredObjects,
-		},
+	// Convert to clean YAML with metadata headers from object
+	yamlString, err := ConvertToYAMLMultipleWithStoredMetadata(filteredObjects)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Write([]byte(yamlString))
 }
 
 // handleChangesByVersion handles GET /changes/<generation_no>?resource=<resource_kind>
-// Returns a specific change by its Kubernetes object generation number
+// Returns a specific change by its Kubernetes object generation number in YAML format
+// Format: timestamp (from creationTimestamp), generation, then YAML
 func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -158,15 +160,15 @@ func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager
 		return
 	}
 
-	response := HTTPResponse{
-		Success: true,
-		Data: ObjectResponse{
-			Object: foundObject,
-		},
+	// Convert to clean YAML with metadata from object
+	yamlString, err := ConvertToYAMLWithStoredMetadata(foundObject)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Write([]byte(yamlString))
 }
 
 // getObjectGeneration extracts the generation number from a Kubernetes object
