@@ -187,9 +187,19 @@ func (ep *EventPipeline) calculateChanges(oldObj, newObj interface{}) *ChangeDet
 
 // storeVersionedResourceChange stores the full object as a versioned change in the queue
 // storeVersionedResourceChange stores the full object directly in Redis queue
+// Only stores if the object's generation has changed
 func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldObj interface{}, changes *ChangeDetails) {
 	if ep.redisManager == nil {
 		return
+	}
+
+	// Check if generation has changed
+	newGen := getObjectGenerationFromEvent(event.Object)
+	oldGen := getObjectGenerationFromEvent(oldObj)
+
+	// Only store if generation changed or if this is a new object
+	if oldObj != nil && newGen == oldGen {
+		return // Skip storing if generation hasn't changed
 	}
 
 	// Create resource key (kind/namespace/name)
@@ -199,6 +209,54 @@ func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldOb
 	if err := ep.redisManager.PushObject(resourceKey, event.Object); err != nil {
 		fmt.Printf("⚠️  Failed to store object in queue: %v\n", err)
 	}
+}
+
+// getObjectGenerationFromEvent extracts generation number from an object
+func getObjectGenerationFromEvent(obj interface{}) int64 {
+	if obj == nil {
+		return 0
+	}
+
+	// Try to convert to map (for unstructured objects)
+	if objMap, ok := obj.(map[string]interface{}); ok {
+		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
+			if metadataMap, ok := metadata.(map[string]interface{}); ok {
+				if gen, hasGen := metadataMap["generation"]; hasGen {
+					if genFloat, ok := gen.(float64); ok {
+						return int64(genFloat)
+					}
+					if genInt, ok := gen.(int64); ok {
+						return genInt
+					}
+					if genInt, ok := gen.(int); ok {
+						return int64(genInt)
+					}
+				}
+			}
+		}
+	}
+
+	// If it's an unstructured.Unstructured object
+	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
+		objMap := unstrObj.Object()
+		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
+			if metadataMap, ok := metadata.(map[string]interface{}); ok {
+				if gen, hasGen := metadataMap["generation"]; hasGen {
+					if genFloat, ok := gen.(float64); ok {
+						return int64(genFloat)
+					}
+					if genInt, ok := gen.(int64); ok {
+						return genInt
+					}
+					if genInt, ok := gen.(int); ok {
+						return int64(genInt)
+					}
+				}
+			}
+		}
+	}
+
+	return 0
 }
 
 // deepCopyObject creates a deep copy of an object
