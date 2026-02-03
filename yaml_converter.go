@@ -7,16 +7,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// CleanKubernetesObject removes unnecessary metadata fields from a Kubernetes object
-// Keeps only: apiVersion, kind, metadata (name, namespace, labels), and spec
-// Note: generation is excluded from metadata as it's already shown in the header
+// CleanKubernetesObject removes only the verbose last-applied-configuration annotation
+// Keeps ALL other fields: apiVersion, kind, full metadata (uid, resourceVersion, generation, etc.), spec, and status
 func CleanKubernetesObject(obj interface{}) map[string]interface{} {
 	// Convert to map for manipulation
 	objJSON, _ := json.Marshal(obj)
 	var objMap map[string]interface{}
 	json.Unmarshal(objJSON, &objMap)
 
-	// Create cleaned object with only essential fields
+	// Create cleaned object - keep everything
 	cleaned := make(map[string]interface{})
 
 	// Keep apiVersion and kind
@@ -27,29 +26,38 @@ func CleanKubernetesObject(obj interface{}) map[string]interface{} {
 		cleaned["kind"] = kind
 	}
 
-	// Clean metadata - keep only name, namespace, and labels (exclude generation)
+	// Keep ALL metadata fields, but remove the verbose last-applied-configuration annotation
 	if metadata, ok := objMap["metadata"].(map[string]interface{}); ok {
 		cleanedMetadata := make(map[string]interface{})
-
-		if name, ok := metadata["name"]; ok {
-			cleanedMetadata["name"] = name
+		
+		// Copy all metadata fields
+		for key, value := range metadata {
+			cleanedMetadata[key] = value
 		}
-		if namespace, ok := metadata["namespace"]; ok {
-			cleanedMetadata["namespace"] = namespace
+		
+		// Remove only the verbose last-applied-configuration annotation
+		if annotations, ok := cleanedMetadata["annotations"].(map[string]interface{}); ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+			// If annotations is now empty, remove it
+			if len(annotations) == 0 {
+				delete(cleanedMetadata, "annotations")
+			}
 		}
-		if labels, ok := metadata["labels"]; ok && labels != nil {
-			cleanedMetadata["labels"] = labels
-		}
-		// Do NOT include generation - it's already in the header
-
-		if len(cleanedMetadata) > 0 {
-			cleaned["metadata"] = cleanedMetadata
-		}
+		
+		// Remove managedFields as it's very verbose (optional - comment out if you want to keep it)
+		delete(cleanedMetadata, "managedFields")
+		
+		cleaned["metadata"] = cleanedMetadata
 	}
 
-	// Keep spec (most important part)
+	// Keep spec
 	if spec, ok := objMap["spec"]; ok {
 		cleaned["spec"] = spec
+	}
+
+	// Keep status (IMPORTANT - this was missing before!)
+	if status, ok := objMap["status"]; ok {
+		cleaned["status"] = status
 	}
 
 	return cleaned

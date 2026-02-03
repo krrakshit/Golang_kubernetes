@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -90,7 +91,9 @@ func watchNamespace(
 			continue
 		}
 
-		fmt.Printf("debugging  %v\n", obj)
+		// Debug: Log the complete object in JSON format
+		objJSON, _ := json.MarshalIndent(obj.Object, "", "  ")
+		fmt.Printf("\n🔍 FULL OBJECT RECEIVED:\n%s\n\n", string(objJSON))
 
 		// Send to pipeline
 		pipeline.SendEvent(ResourceEvent{
@@ -162,7 +165,9 @@ func watchAllNamespaces(
 			continue
 		}
 
-		fmt.Printf("Event: %v\n", event)
+		// Debug: Log the complete object in JSON format
+		objJSON, _ := json.MarshalIndent(obj.Object, "", "  ")
+		fmt.Printf("\n🔍 FULL OBJECT RECEIVED (all namespaces):\n%s\n\n", string(objJSON))
 
 		// Send to pipeline
 		pipeline.SendEvent(ResourceEvent{
