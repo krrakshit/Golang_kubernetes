@@ -27,6 +27,12 @@ type RedisManager struct {
 	maxSize   int
 }
 
+// StoredObject wraps a Kubernetes object with storage metadata
+type StoredObject struct {
+	Object           interface{} `json:"object"`            // The actual Kubernetes object
+	StoredTimestamp  string      `json:"stored_timestamp"`  // When this version was stored in Redis
+}
+
 // NewRedisManager creates a new Redis manager
 func NewRedisManager(redisAddr string, queueName string, maxSize int) (*RedisManager, error) {
 	client := redis.NewClient(&redis.Options{
@@ -53,8 +59,14 @@ func (rm *RedisManager) PushObject(resourceKey string, obj interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Marshal object to JSON
-	data, err := json.Marshal(obj)
+	// Wrap object with storage timestamp
+	storedObj := StoredObject{
+		Object:          obj,
+		StoredTimestamp: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Marshal wrapped object to JSON
+	data, err := json.Marshal(storedObj)
 	if err != nil {
 		return fmt.Errorf("failed to marshal object: %w", err)
 	}

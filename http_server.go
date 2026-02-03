@@ -67,8 +67,16 @@ func getObjectGeneration(obj interface{}) int64 {
 		return 0
 	}
 
-	// Try to convert to map (for unstructured objects)
+	// First, unwrap if it's a StoredObject
+	actualObj := obj
 	if objMap, ok := obj.(map[string]interface{}); ok {
+		if innerObj, hasObject := objMap["object"]; hasObject {
+			actualObj = innerObj
+		}
+	}
+
+	// Try to convert to map (for unstructured objects)
+	if objMap, ok := actualObj.(map[string]interface{}); ok {
 		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
 			if metadataMap, ok := metadata.(map[string]interface{}); ok {
 				if gen, hasGen := metadataMap["generation"]; hasGen {
@@ -89,19 +97,50 @@ func getObjectGeneration(obj interface{}) int64 {
 	return 0
 }
 
-// getObjectTimestamp extracts the creationTimestamp from a Kubernetes object
+// getObjectTimestamp extracts the timestamp from a Kubernetes object
+// Priority: 1) stored_timestamp (if wrapped), 2) managedFields[].time (most recent), 3) creationTimestamp
 func getObjectTimestamp(obj interface{}) string {
 	if obj == nil {
 		return ""
 	}
 
-	// Try to convert to map (for unstructured objects)
+	// First, try to get stored_timestamp from StoredObject wrapper (new format)
 	if objMap, ok := obj.(map[string]interface{}); ok {
-		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
-			if metadataMap, ok := metadata.(map[string]interface{}); ok {
-				if ts, hasTS := metadataMap["creationTimestamp"]; hasTS {
-					if tsStr, ok := ts.(string); ok {
-						return tsStr
+		if ts, hasTS := objMap["stored_timestamp"]; hasTS {
+			if tsStr, ok := ts.(string); ok {
+				return tsStr
+			}
+		}
+		
+		// If not wrapped, try to unwrap and get the actual object
+		actualObj := obj
+		if innerObj, hasObject := objMap["object"]; hasObject {
+			actualObj = innerObj
+		}
+		
+		// Try to get timestamp from managedFields (shows when each generation was updated)
+		if actualObjMap, ok := actualObj.(map[string]interface{}); ok {
+			if metadata, hasMetadata := actualObjMap["metadata"]; hasMetadata {
+				if metadataMap, ok := metadata.(map[string]interface{}); ok {
+					// Get the most recent time from managedFields
+					if managedFields, hasMF := metadataMap["managedFields"]; hasMF {
+						if mfArray, ok := managedFields.([]interface{}); ok && len(mfArray) > 0 {
+							// Get the last managedField entry (most recent)
+							if lastMF, ok := mfArray[len(mfArray)-1].(map[string]interface{}); ok {
+								if time, hasTime := lastMF["time"]; hasTime {
+									if timeStr, ok := time.(string); ok {
+										return timeStr
+									}
+								}
+							}
+						}
+					}
+					
+					// Fallback to creationTimestamp
+					if ts, hasTS := metadataMap["creationTimestamp"]; hasTS {
+						if tsStr, ok := ts.(string); ok {
+							return tsStr
+						}
 					}
 				}
 			}
@@ -230,8 +269,16 @@ func handleGetGenerationYAML(w http.ResponseWriter, r *http.Request, redisManage
 		return
 	}
 
+	// Unwrap the StoredObject to get the actual Kubernetes object
+	actualObject := foundObject
+	if objMap, ok := foundObject.(map[string]interface{}); ok {
+		if innerObj, hasObject := objMap["object"]; hasObject {
+			actualObject = innerObj
+		}
+	}
+
 	// Convert to YAML
-	yamlString, err := ConvertToYAMLWithStoredMetadata(foundObject)
+	yamlString, err := ConvertToYAMLWithStoredMetadata(actualObject)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
 		return
@@ -273,20 +320,28 @@ func handleListAllResources(w http.ResponseWriter, r *http.Request, redisManager
 	json.NewEncoder(w).Encode(resources)
 }
 
-	// getObjectKind extracts the kind from a Kubernetes object
-	func getObjectKind(obj interface{}) string {
-		if obj == nil {
-			return ""
-		}
-
-		// Try to convert to map (for unstructured objects)
-		if objMap, ok := obj.(map[string]interface{}); ok {
-			if kind, hasKind := objMap["kind"]; hasKind {
-				if kindStr, ok := kind.(string); ok {
-					return kindStr
-				}
-			}
-		}
-
+// getObjectKind extracts the kind from a Kubernetes object
+func getObjectKind(obj interface{}) string {
+	if obj == nil {
 		return ""
 	}
+
+	// First, unwrap if it's a StoredObject
+	actualObj := obj
+	if objMap, ok := obj.(map[string]interface{}); ok {
+		if innerObj, hasObject := objMap["object"]; hasObject {
+			actualObj = innerObj
+		}
+	}
+
+	// Try to convert to map (for unstructured objects)
+	if objMap, ok := actualObj.(map[string]interface{}); ok {
+		if kind, hasKind := objMap["kind"]; hasKind {
+			if kindStr, ok := kind.(string); ok {
+				return kindStr
+			}
+		}
+	}
+
+	return ""
+}

@@ -90,6 +90,8 @@ func watchNamespace(
 			continue
 		}
 
+		fmt.Printf("debugging  %v\n", obj)
+
 		// Send to pipeline
 		pipeline.SendEvent(ResourceEvent{
 			Type:          EventType(event.Type),
@@ -159,6 +161,8 @@ func watchAllNamespaces(
 		if !ok {
 			continue
 		}
+
+		fmt.Printf("Event: %v\n", event)
 
 		// Send to pipeline
 		pipeline.SendEvent(ResourceEvent{
