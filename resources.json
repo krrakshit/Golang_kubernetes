@@ -6,7 +6,19 @@
       "resource": "gateways",
       "kind": "Gateway",
       "enabled": true,
-      "namespaces": ["default"]
+      "namespaces": [
+        "default"
+      ]
+    },
+    {
+      "group": "gateway.networking.k8s.io",
+      "version": "v1",
+      "resource": "httproutes",
+      "kind": "HTTPRoute",
+      "enabled": true,
+      "namespaces": [
+        "default"
+      ]
     }
   ]
-} 
+}

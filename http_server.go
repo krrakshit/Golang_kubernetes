@@ -16,31 +16,21 @@ type HTTPResponse struct {
 	Error   string      `json:"error,omitempty"`
 }
 
-// ObjectResponse wraps an object in the data response
-type ObjectResponse struct {
-	Object interface{} `json:"object"`
-}
-
-// ObjectsResponse wraps objects in the data response
-type ObjectsResponse struct {
-	Objects []interface{} `json:"objects"`
-}
-
-// ChangesResponse represents the response for /changes endpoint
-type ChangesResponse struct {
-	Resource string           `json:"resource"`
-	Count    int              `json:"count"`
-	Changes  []ResourceChange `json:"changes"`
-}
-
-// StartHTTPServer starts the HTTP server with change endpoints
+// StartHTTPServer starts the HTTP server with the three main APIs
 func StartHTTPServer(redisManager *RedisManager, port string) error {
-	http.HandleFunc("/changes", func(w http.ResponseWriter, r *http.Request) {
-		handleChanges(w, r, redisManager)
+	// API 1: Get resource history (generations & timestamps)
+	http.HandleFunc("/api/history", func(w http.ResponseWriter, r *http.Request) {
+		handleGetResourceHistory(w, r, redisManager)
 	})
 
-	http.HandleFunc("/changes/", func(w http.ResponseWriter, r *http.Request) {
-		handleChangesByVersion(w, r, redisManager)
+	// API 2: Get specific generation YAML
+	http.HandleFunc("/api/generation", func(w http.ResponseWriter, r *http.Request) {
+		handleGetGenerationYAML(w, r, redisManager)
+	})
+
+	// API 3: List all resource tuples
+	http.HandleFunc("/api/resources", func(w http.ResponseWriter, r *http.Request) {
+		handleListAllResources(w, r, redisManager)
 	})
 
 	// Health check endpoint
@@ -53,122 +43,22 @@ func StartHTTPServer(redisManager *RedisManager, port string) error {
 	})
 
 	fmt.Printf("🌐 HTTP Server starting on :%s\n", port)
-	fmt.Printf("   📍 GET /changes?resource=<KIND> - Get all changes for a resource\n")
-	fmt.Printf("   📍 GET /changes/<VERSION>?resource=<KIND> - Get specific version\n")
+	fmt.Printf("   📍 GET /api/history?kind=<KIND>&name=<NAME>&namespace=<NS> - Get resource history\n")
+	fmt.Printf("   📍 GET /api/generation?kind=<KIND>&name=<NAME>&namespace=<NS>&generation=<GEN> - Get specific generation\n")
+	fmt.Printf("   📍 GET /api/resources - List all resources\n")
 	fmt.Printf("   📍 GET /health - Health check\n\n")
 
 	return http.ListenAndServe(":"+port, nil)
 }
 
-// handleChanges handles GET /changes?resource=<resource_kind>
-// Returns all objects from the queue for a specific resource kind in YAML format
-// Format: timestamp (from creationTimestamp), generation, then YAML for each object
-func handleChanges(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
-	if r.Method != http.MethodGet {
-		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	resourceKind := r.URL.Query().Get("resource")
-	if resourceKind == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "Missing 'resource' query parameter. Example: /changes?resource=Gateway")
-		return
-	}
-
-	// Get all objects from queue
-	allObjects, err := redisManager.GetAllObjects()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve objects: %v", err))
-		return
-	}
-
-	// Filter by resource kind
-	filteredObjects := []interface{}{}
-	for _, obj := range allObjects {
-		objKind := getObjectKind(obj)
-		if objKind == resourceKind {
-			filteredObjects = append(filteredObjects, obj)
-		}
-	}
-
-	// Convert to clean YAML with metadata headers from object
-	yamlString, err := ConvertToYAMLMultipleWithStoredMetadata(filteredObjects)
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/yaml")
-	w.Write([]byte(yamlString))
-}
-
-// handleChangesByVersion handles GET /changes/<generation_no>?resource=<resource_kind>
-// Returns a specific change by its Kubernetes object generation number in YAML format
-// Format: timestamp (from creationTimestamp), generation, then YAML
-func handleChangesByVersion(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
-	if r.Method != http.MethodGet {
-		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
-	}
-
-	resourceKind := r.URL.Query().Get("resource")
-	if resourceKind == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "Missing 'resource' query parameter. Example: /changes/2?resource=Gateway")
-		return
-	}
-
-	// Extract generation number from path /changes/<generation_no>
-	// r.URL.Path will be like "/changes/2"
-	pathParts := strings.Split(strings.TrimPrefix(strings.TrimSuffix(r.URL.Path, "/"), "/changes/"), "/")
-	generationStr := pathParts[0]
-
-	if generationStr == "" {
-		writeErrorResponse(w, http.StatusBadRequest, "Missing generation number in path. Example: /changes/2?resource=Gateway")
-		return
-	}
-
-	targetGeneration, err := strconv.ParseInt(generationStr, 10, 64)
-	if err != nil {
-		writeErrorResponse(w, http.StatusBadRequest, "Invalid generation number. Must be a positive integer.")
-		return
-	}
-
-	// Get all objects from queue
-	allObjects, err := redisManager.GetAllObjects()
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve objects: %v", err))
-		return
-	}
-
-	// Find object with matching Kubernetes object generation number and resource kind
-	var foundObject interface{}
-	for _, obj := range allObjects {
-		objKind := getObjectKind(obj)
-		if objKind == resourceKind {
-			// Extract generation from the object's metadata
-			objGen := getObjectGeneration(obj)
-			if objGen == targetGeneration {
-				foundObject = obj
-				break
-			}
-		}
-	}
-
-	if foundObject == nil {
-		writeErrorResponse(w, http.StatusNotFound,
-			fmt.Sprintf("No object found for resource '%s' at generation number %d", resourceKind, targetGeneration))
-		return
-	}
-
-	// Convert to clean YAML with metadata from object
-	yamlString, err := ConvertToYAMLWithStoredMetadata(foundObject)
-	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/yaml")
-	w.Write([]byte(yamlString))
+// writeErrorResponse writes a formatted error response
+func writeErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(HTTPResponse{
+		Success: false,
+		Error:   message,
+	})
 }
 
 // getObjectGeneration extracts the generation number from a Kubernetes object
@@ -196,50 +86,24 @@ func getObjectGeneration(obj interface{}) int64 {
 		}
 	}
 
-	// If it's an unstructured.Unstructured object
-	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
-		objMap := unstrObj.Object()
-		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
-			if metadataMap, ok := metadata.(map[string]interface{}); ok {
-				if gen, hasGen := metadataMap["generation"]; hasGen {
-					if genFloat, ok := gen.(float64); ok {
-						return int64(genFloat)
-					}
-					if genInt, ok := gen.(int64); ok {
-						return genInt
-					}
-					if genInt, ok := gen.(int); ok {
-						return int64(genInt)
-					}
-				}
-			}
-		}
-	}
-
 	return 0
 }
 
-// getObjectKind extracts the kind from a Kubernetes object
-func getObjectKind(obj interface{}) string {
+// getObjectTimestamp extracts the creationTimestamp from a Kubernetes object
+func getObjectTimestamp(obj interface{}) string {
 	if obj == nil {
 		return ""
 	}
 
 	// Try to convert to map (for unstructured objects)
 	if objMap, ok := obj.(map[string]interface{}); ok {
-		if kind, hasKind := objMap["kind"]; hasKind {
-			if kindStr, ok := kind.(string); ok {
-				return kindStr
-			}
-		}
-	}
-
-	// If it's an unstructured.Unstructured object
-	if unstrObj, ok := obj.(interface{ Object() map[string]interface{} }); ok {
-		objMap := unstrObj.Object()
-		if kind, hasKind := objMap["kind"]; hasKind {
-			if kindStr, ok := kind.(string); ok {
-				return kindStr
+		if metadata, hasMetadata := objMap["metadata"]; hasMetadata {
+			if metadataMap, ok := metadata.(map[string]interface{}); ok {
+				if ts, hasTS := metadataMap["creationTimestamp"]; hasTS {
+					if tsStr, ok := ts.(string); ok {
+						return tsStr
+					}
+				}
 			}
 		}
 	}
@@ -247,12 +111,182 @@ func getObjectKind(obj interface{}) string {
 	return ""
 }
 
-// writeErrorResponse writes a formatted error response
-func writeErrorResponse(w http.ResponseWriter, statusCode int, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(HTTPResponse{
-		Success: false,
-		Error:   message,
-	})
+// ============================================================================
+// NEW API HANDLERS
+// ============================================================================
+
+// ResourceHistoryItem represents a single history entry with generation and timestamp
+type ResourceHistoryItem struct {
+	Generation int64  `json:"generation"`
+	Timestamp  string `json:"timestamp"`
 }
+
+// ResourceTuple represents a kind/name/namespace tuple
+type ResourceTuple struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+// handleGetResourceHistory handles GET /api/history?kind=<KIND>&name=<NAME>&namespace=<NAMESPACE>
+// API 1: Returns list of changes (only generation & timestamp)
+func handleGetResourceHistory(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Get query parameters
+	kind := r.URL.Query().Get("kind")
+	name := r.URL.Query().Get("name")
+	namespace := r.URL.Query().Get("namespace")
+
+	if kind == "" || name == "" || namespace == "" {
+		writeErrorResponse(w, http.StatusBadRequest, "Missing required parameters: kind, name, namespace")
+		return
+	}
+
+	resourceKey := fmt.Sprintf("%s/%s/%s", kind, name, namespace)
+
+	// Get all versions of this resource
+	objects, err := redisManager.GetResourceObjects(resourceKey)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve resource: %v", err))
+		return
+	}
+
+	if len(objects) == 0 {
+		writeErrorResponse(w, http.StatusNotFound, fmt.Sprintf("Resource not found: %s", resourceKey))
+		return
+	}
+
+	// Extract generation and timestamp from each object
+	history := make([]ResourceHistoryItem, 0, len(objects))
+	for _, obj := range objects {
+		generation := getObjectGeneration(obj)
+		timestamp := getObjectTimestamp(obj)
+		
+		history = append(history, ResourceHistoryItem{
+			Generation: generation,
+			Timestamp:  timestamp,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(history)
+}
+
+// handleGetGenerationYAML handles GET /api/generation?kind=<KIND>&name=<NAME>&namespace=<NAMESPACE>&generation=<GEN>
+// API 2: Returns the YAML for only the specified generation
+func handleGetGenerationYAML(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Get query parameters
+	kind := r.URL.Query().Get("kind")
+	name := r.URL.Query().Get("name")
+	namespace := r.URL.Query().Get("namespace")
+	generationStr := r.URL.Query().Get("generation")
+
+	if kind == "" || name == "" || namespace == "" || generationStr == "" {
+		writeErrorResponse(w, http.StatusBadRequest, "Missing required parameters: kind, name, namespace, generation")
+		return
+	}
+
+	targetGeneration, err := strconv.ParseInt(generationStr, 10, 64)
+	if err != nil {
+		writeErrorResponse(w, http.StatusBadRequest, "Invalid generation number. Must be a positive integer.")
+		return
+	}
+
+	resourceKey := fmt.Sprintf("%s/%s/%s", kind, name, namespace)
+
+	// Get all versions of this resource
+	objects, err := redisManager.GetResourceObjects(resourceKey)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve resource: %v", err))
+		return
+	}
+
+	if len(objects) == 0 {
+		writeErrorResponse(w, http.StatusNotFound, fmt.Sprintf("Resource not found: %s", resourceKey))
+		return
+	}
+
+	// Find the object with matching generation
+	var foundObject interface{}
+	for _, obj := range objects {
+		if getObjectGeneration(obj) == targetGeneration {
+			foundObject = obj
+			break
+		}
+	}
+
+	if foundObject == nil {
+		writeErrorResponse(w, http.StatusNotFound, 
+			fmt.Sprintf("Generation %d not found for resource %s", targetGeneration, resourceKey))
+		return
+	}
+
+	// Convert to YAML
+	yamlString, err := ConvertToYAMLWithStoredMetadata(foundObject)
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to convert to YAML: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/yaml")
+	w.Write([]byte(yamlString))
+}
+
+// handleListAllResources handles GET /api/resources
+// API 3: Returns all Kind/Name/Namespace tuples by querying keys in Redis
+func handleListAllResources(w http.ResponseWriter, r *http.Request, redisManager *RedisManager) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Get all resource keys
+	keys, err := redisManager.GetAllResourceKeys()
+	if err != nil {
+		writeErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve resource keys: %v", err))
+		return
+	}
+
+	// Parse keys into tuples
+	resources := make([]ResourceTuple, 0, len(keys))
+	for _, key := range keys {
+		parts := strings.Split(key, "/")
+		if len(parts) == 3 {
+			resources = append(resources, ResourceTuple{
+				Kind:      parts[0],
+				Name:      parts[1],
+				Namespace: parts[2],
+			})
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resources)
+}
+
+	// getObjectKind extracts the kind from a Kubernetes object
+	func getObjectKind(obj interface{}) string {
+		if obj == nil {
+			return ""
+		}
+
+		// Try to convert to map (for unstructured objects)
+		if objMap, ok := obj.(map[string]interface{}); ok {
+			if kind, hasKind := objMap["kind"]; hasKind {
+				if kindStr, ok := kind.(string); ok {
+					return kindStr
+				}
+			}
+		}
+
+		return ""
+	}

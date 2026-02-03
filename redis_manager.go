@@ -48,7 +48,7 @@ func NewRedisManager(redisAddr string, queueName string, maxSize int) (*RedisMan
 	}, nil
 }
 
-// PushObject pushes a direct object to the global queue without versioning metadata
+// PushObject pushes a direct object to a resource-specific key (kind/name/namespace)
 func (rm *RedisManager) PushObject(resourceKey string, obj interface{}) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -59,14 +59,14 @@ func (rm *RedisManager) PushObject(resourceKey string, obj interface{}) error {
 		return fmt.Errorf("failed to marshal object: %w", err)
 	}
 
-	// Push to queue (LPUSH adds to the beginning - most recent first)
-	if err := rm.client.LPush(ctx, rm.queueName, string(data)).Err(); err != nil {
-		return fmt.Errorf("failed to push to queue: %w", err)
+	// Push to resource-specific key (LPUSH adds to the beginning - most recent first)
+	if err := rm.client.LPush(ctx, resourceKey, string(data)).Err(); err != nil {
+		return fmt.Errorf("failed to push to resource key %s: %w", resourceKey, err)
 	}
 
-	// Trim queue to maxSize (keep only the most recent N objects)
-	if err := rm.client.LTrim(ctx, rm.queueName, 0, int64(rm.maxSize-1)).Err(); err != nil {
-		return fmt.Errorf("failed to trim queue: %w", err)
+	// Trim resource-specific list to maxSize (keep only the most recent N versions)
+	if err := rm.client.LTrim(ctx, resourceKey, 0, int64(rm.maxSize-1)).Err(); err != nil {
+		return fmt.Errorf("failed to trim resource key %s: %w", resourceKey, err)
 	}
 
 	rm.logObject(obj)
@@ -133,15 +133,45 @@ func (rm *RedisManager) GetResourceChanges(resourceKey string) ([]ResourceChange
 	return changes, nil
 }
 
-// GetAllObjects retrieves all objects from the global queue as raw objects
+// GetAllObjects retrieves all objects from all resource keys
 func (rm *RedisManager) GetAllObjects() ([]interface{}, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Get all items from the queue
-	results, err := rm.client.LRange(ctx, rm.queueName, 0, -1).Result()
+	// Get all keys matching the pattern (kind/name/namespace)
+	keys, err := rm.client.Keys(ctx, "*/*/*").Result()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get objects from queue: %w", err)
+		return nil, fmt.Errorf("failed to get resource keys: %w", err)
+	}
+
+	objects := make([]interface{}, 0)
+
+	// For each key, get the most recent object (index 0)
+	for _, key := range keys {
+		results, err := rm.client.LRange(ctx, key, 0, 0).Result()
+		if err != nil || len(results) == 0 {
+			continue
+		}
+
+		var obj interface{}
+		if err := json.Unmarshal([]byte(results[0]), &obj); err != nil {
+			continue // Skip invalid JSON
+		}
+		objects = append(objects, obj)
+	}
+
+	return objects, nil
+}
+
+// GetResourceObjects retrieves all versions of a specific resource
+func (rm *RedisManager) GetResourceObjects(resourceKey string) ([]interface{}, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get all items from the resource-specific key
+	results, err := rm.client.LRange(ctx, resourceKey, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get objects from resource key %s: %w", resourceKey, err)
 	}
 
 	objects := make([]interface{}, 0, len(results))
@@ -156,6 +186,20 @@ func (rm *RedisManager) GetAllObjects() ([]interface{}, error) {
 	}
 
 	return objects, nil
+}
+
+// GetAllResourceKeys retrieves all resource keys stored in Redis
+func (rm *RedisManager) GetAllResourceKeys() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Get all keys matching the pattern (kind/name/namespace)
+	keys, err := rm.client.Keys(ctx, "*/*/*").Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get resource keys: %w", err)
+	}
+
+	return keys, nil
 }
 
 // GetCurrentVersion returns the current version number for a resource (count from queue)

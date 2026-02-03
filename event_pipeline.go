@@ -83,7 +83,7 @@ func (ep *EventPipeline) Start() {
 // processEvent processes a single event
 func (ep *EventPipeline) processEvent(event ResourceEvent) {
 	// Generate unique key for this resource
-	key := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
+	key := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Name, event.Namespace)
 
 	// Check if this is a metadata/spec change
 	if !ep.hasRelevantChanges(event) && event.Type != EventTypeAdded {
@@ -211,7 +211,7 @@ func (ep *EventPipeline) storeVersionedResourceChange(event ResourceEvent, oldOb
 	newGen := getObjectGenerationFromEvent(event.Object)
 	oldGen := getObjectGenerationFromEvent(oldObj)
 
-	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Namespace, event.Name)
+	resourceKey := fmt.Sprintf("%s/%s/%s", event.ResourceKind, event.Name, event.Namespace)
 
 	// Debug logging
 	fmt.Printf("📊 Generation Check - Resource: %s | Old Gen: %d | New Gen: %d\n", resourceKey, oldGen, newGen)
